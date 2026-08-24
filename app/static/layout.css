@@ -1,0 +1,1 @@
+body:not(:has(.stand)){grid-template-columns:220px minmax(0,1fr)}@media(max-width:1000px){body:not(:has(.stand)){grid-template-columns:200px minmax(0,1fr)}}@media(max-width:700px){body:not(:has(.stand)){display:block}}
