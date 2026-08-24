@@ -5,8 +5,16 @@ from sqlalchemy.orm import Session, selectinload
 from .models import Event, Pod, Registration, Round, Seat
 
 def standings(event: Event):
-    wins = Counter(p.winner_id for r in event.rounds for p in r.pods if p.winner_id)
-    return sorted(((r.player, wins[r.player_id]) for r in event.registrations), key=lambda x: (-x[1], x[0].name))
+    players={r.player_id:r.player for r in event.registrations}
+    wins=Counter();draws=Counter();games=Counter()
+    for rnd in event.rounds:
+        for pod in rnd.pods:
+            if pod.winner_id:wins[pod.winner_id]+=1
+            for seat in pod.seats:
+                players[seat.player_id]=seat.player;games[seat.player_id]+=1
+                if pod.draw:draws[seat.player_id]+=1
+    rows=[(player,wins[player_id],draws[player_id],wins[player_id]*3+draws[player_id],games[player_id]) for player_id,player in players.items()]
+    return sorted(rows,key=lambda x:(-x[3],-x[1],x[0].name))
 
 def create_round(db: Session, event: Event) -> Round:
     history = Counter()

@@ -42,7 +42,7 @@ def health(): return {"status":"ok"}
 @app.get("/")
 def home(request:Request,event_id:str|None=None,db:Session=Depends(session)):
     parsed_event_id = int(event_id) if event_id and event_id.isdigit() else None
-    event=load_event(db,parsed_event_id)
+    event=load_event(db,parsed_event_id) if parsed_event_id else None
     players=db.scalars(select(Player).order_by(Player.name)).all()
     events=db.scalars(select(Event).order_by(Event.id.desc())).all()
     user=current_user(request,db)
