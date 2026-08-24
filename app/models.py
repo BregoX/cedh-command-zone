@@ -10,6 +10,15 @@ class Player(Base):
     commander: Mapped[str] = mapped_column(String(160), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(20), default="player")
+    player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id", ondelete="SET NULL"), nullable=True, unique=True)
+    player: Mapped[Player | None] = relationship()
+
 class Event(Base):
     __tablename__ = "events"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -48,4 +57,5 @@ class Seat(Base):
     pod_id: Mapped[int] = mapped_column(ForeignKey("pods.id", ondelete="CASCADE"))
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"))
     position: Mapped[int]
+    deck: Mapped[str] = mapped_column(String(160), default="")
     player: Mapped[Player] = relationship()
