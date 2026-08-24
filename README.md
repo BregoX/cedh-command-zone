@@ -23,3 +23,21 @@ uvicorn app.main:app --reload
 ```
 
 Та же переменная задаётся на Render при публикации. Секрет нельзя добавлять в Git.
+
+## Вход через Google
+
+Создайте OAuth client типа **Web application** в Google Cloud и добавьте точный redirect URI:
+
+```text
+https://cedh-command-zone.onrender.com/auth/google/callback
+```
+
+В Render задайте переменные окружения:
+
+```text
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=https://cedh-command-zone.onrender.com/auth/google/callback
+```
+
+Google-email пользователя заранее указывается администратором во вкладке «Пользователи». Парольный вход остаётся резервным.

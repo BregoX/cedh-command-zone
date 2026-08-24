@@ -1,0 +1,1 @@
+.user-form{grid-template-columns:1fr 1.3fr 1fr 150px 1fr auto}.user-row{grid-template-columns:130px 1.3fr 130px 1fr 1fr 150px auto}@media(max-width:1200px){.user-form,.user-row{grid-template-columns:1fr 1fr}}@media(max-width:700px){.user-form,.user-row{grid-template-columns:1fr}}

@@ -1,6 +1,8 @@
 from datetime import date
 from pathlib import Path
-import os
+import os, secrets
+from urllib.parse import urlencode
+import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +30,10 @@ def startup():
             return {row[0] for row in conn.exec_driver_sql("SELECT column_name FROM information_schema.columns WHERE table_name=%s",(table,))}
         if "deck" not in columns("seats"): conn.exec_driver_sql("ALTER TABLE seats ADD COLUMN deck VARCHAR(160) NOT NULL DEFAULT ''")
         if "active" not in columns("users"): conn.exec_driver_sql("ALTER TABLE users ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE")
+        if "email" not in columns("users"): conn.exec_driver_sql("ALTER TABLE users ADD COLUMN email VARCHAR(255)")
+        if "google_sub" not in columns("users"): conn.exec_driver_sql("ALTER TABLE users ADD COLUMN google_sub VARCHAR(255)")
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email)")
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_sub ON users (google_sub)")
         if "draw" not in columns("pods"): conn.exec_driver_sql("ALTER TABLE pods ADD COLUMN draw BOOLEAN NOT NULL DEFAULT FALSE")
 
 @app.get("/health")
@@ -45,7 +51,7 @@ def home(request:Request,event_id:str|None=None,db:Session=Depends(session)):
 
 @app.get("/login")
 def login_page(request:Request,db:Session=Depends(session)):
-    return templates.TemplateResponse(request,"login.html",{"setup":db.scalar(select(User.id).limit(1)) is None,"error":None})
+    return templates.TemplateResponse(request,"login.html",{"setup":db.scalar(select(User.id).limit(1)) is None,"error":request.query_params.get("error"),"google_enabled":bool(os.getenv("GOOGLE_CLIENT_ID") and os.getenv("GOOGLE_CLIENT_SECRET"))})
 
 @app.post("/setup")
 def setup(request:Request,username:str=Form(),password:str=Form(),db:Session=Depends(session)):
@@ -57,11 +63,42 @@ def setup(request:Request,username:str=Form(),password:str=Form(),db:Session=Dep
 @app.post("/login")
 def login(request:Request,username:str=Form(),password:str=Form(),db:Session=Depends(session)):
     user=db.scalar(select(User).where(User.username==username.strip()))
-    if not user or not user.active or not verify_password(password,user.password_hash):return templates.TemplateResponse(request,"login.html",{"setup":False,"error":"Неверный логин, пароль или аккаунт отключён"},status_code=400)
+    if not user or not user.active or not verify_password(password,user.password_hash):return templates.TemplateResponse(request,"login.html",{"setup":False,"error":"Неверный логин, пароль или аккаунт отключён","google_enabled":bool(os.getenv("GOOGLE_CLIENT_ID") and os.getenv("GOOGLE_CLIENT_SECRET"))},status_code=400)
     request.session["user_id"]=user.id;return RedirectResponse("/",303)
 
 @app.post("/logout")
 def logout(request:Request):request.session.clear();return RedirectResponse("/login",303)
+
+@app.get("/auth/google")
+def google_login(request:Request):
+    client_id=os.getenv("GOOGLE_CLIENT_ID")
+    if not client_id or not os.getenv("GOOGLE_CLIENT_SECRET"):return RedirectResponse("/login?error=Вход через Google ещё не настроен",303)
+    state=secrets.token_urlsafe(32);request.session["google_oauth_state"]=state
+    redirect_uri=os.getenv("GOOGLE_REDIRECT_URI",str(request.url_for("google_callback")))
+    params={"client_id":client_id,"redirect_uri":redirect_uri,"response_type":"code","scope":"openid email profile","state":state,"prompt":"select_account"}
+    return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?"+urlencode(params),303)
+
+@app.get("/auth/google/callback")
+async def google_callback(request:Request,code:str|None=None,state:str|None=None,error:str|None=None,db:Session=Depends(session)):
+    expected=request.session.pop("google_oauth_state",None)
+    if error:return RedirectResponse("/login?error=Вход через Google отменён",303)
+    if not code or not state or not expected or not secrets.compare_digest(state,expected):return RedirectResponse("/login?error=Не удалось проверить вход через Google",303)
+    redirect_uri=os.getenv("GOOGLE_REDIRECT_URI",str(request.url_for("google_callback")))
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_response=await client.post("https://oauth2.googleapis.com/token",data={"code":code,"client_id":os.environ["GOOGLE_CLIENT_ID"],"client_secret":os.environ["GOOGLE_CLIENT_SECRET"],"redirect_uri":redirect_uri,"grant_type":"authorization_code"})
+            token_response.raise_for_status();access_token=token_response.json()["access_token"]
+            info_response=await client.get("https://openidconnect.googleapis.com/v1/userinfo",headers={"Authorization":f"Bearer {access_token}"})
+            info_response.raise_for_status();info=info_response.json()
+    except (httpx.HTTPError,KeyError):return RedirectResponse("/login?error=Google не подтвердил вход",303)
+    if not info.get("email_verified") or not info.get("email") or not info.get("sub"):return RedirectResponse("/login?error=Google-email не подтверждён",303)
+    email=info["email"].strip().lower();sub=info["sub"]
+    user=db.scalar(select(User).where((User.google_sub==sub)|(User.email==email)))
+    if not user:return RedirectResponse("/login?error=Этот Google-аккаунт не добавлен администратором",303)
+    if not user.active:return RedirectResponse("/login?error=Доступ для аккаунта отключён",303)
+    if user.google_sub and user.google_sub!=sub:return RedirectResponse("/login?error=Email уже связан с другим Google-аккаунтом",303)
+    user.google_sub=sub;user.email=email;db.commit();request.session["user_id"]=user.id
+    return RedirectResponse("/",303)
 
 @app.post("/players")
 def add_player(request:Request,name:str=Form(),commander:str=Form(""),db:Session=Depends(session)):
@@ -80,19 +117,21 @@ def create_player_account(request:Request,player_id:int,username:str=Form(),pass
     db.add(User(username=username.strip(),password_hash=hash_password(password),role="player",player_id=player_id));db.commit();return RedirectResponse("/?tab=players",303)
 
 @app.post("/users")
-def create_user(request:Request,username:str=Form(),password:str=Form(),role:str=Form("player"),player_id:str=Form(""),db:Session=Depends(session)):
+def create_user(request:Request,username:str=Form(),password:str=Form(),email:str=Form(""),role:str=Form("player"),player_id:str=Form(""),db:Session=Depends(session)):
     require_admin(request,db);username=username.strip()
     if not username:return RedirectResponse("/?tab=users&error=Укажите логин",303)
     if db.scalar(select(User.id).where(User.username==username)):return RedirectResponse("/?tab=users&error=Такой логин уже существует",303)
     if len(password)<8:return RedirectResponse("/?tab=users&error=Пароль должен содержать минимум 8 символов",303)
+    email=email.strip().lower() or None
+    if email and db.scalar(select(User.id).where(User.email==email)):return RedirectResponse("/?tab=users&error=Этот email уже используется",303)
     if role not in {"admin","player"}:raise HTTPException(400,"Неизвестная роль")
     linked_player_id=int(player_id) if player_id.isdigit() else None
     if linked_player_id and db.scalar(select(User.id).where(User.player_id==linked_player_id)):return RedirectResponse("/?tab=users&error=У этого игрока уже есть аккаунт",303)
-    db.add(User(username=username,password_hash=hash_password(password),role=role,player_id=linked_player_id,active=True));db.commit()
+    db.add(User(username=username,email=email,password_hash=hash_password(password),role=role,player_id=linked_player_id,active=True));db.commit()
     return RedirectResponse("/?tab=users",303)
 
 @app.post("/users/{user_id}")
-def edit_user(request:Request,user_id:int,role:str=Form(),player_id:str=Form(""),password:str=Form(""),active:bool=Form(False),db:Session=Depends(session)):
+def edit_user(request:Request,user_id:int,role:str=Form(),player_id:str=Form(""),email:str=Form(""),password:str=Form(""),active:bool=Form(False),db:Session=Depends(session)):
     admin=require_admin(request,db);target=db.get(User,user_id)
     if not target:raise HTTPException(404)
     if role not in {"admin","player"}:raise HTTPException(400,"Неизвестная роль")
@@ -103,8 +142,11 @@ def edit_user(request:Request,user_id:int,role:str=Form(),player_id:str=Form("")
     linked_player_id=int(player_id) if player_id.isdigit() else None
     owner=db.scalar(select(User).where(User.player_id==linked_player_id,User.id!=target.id)) if linked_player_id else None
     if owner:return RedirectResponse("/?tab=users&error=У этого игрока уже есть аккаунт",303)
+    email=email.strip().lower() or None
+    email_owner=db.scalar(select(User).where(User.email==email,User.id!=target.id)) if email else None
+    if email_owner:return RedirectResponse("/?tab=users&error=Этот email уже используется",303)
     if password and len(password)<8:return RedirectResponse("/?tab=users&error=Новый пароль должен содержать минимум 8 символов",303)
-    target.role=role;target.player_id=linked_player_id;target.active=active
+    target.role=role;target.player_id=linked_player_id;target.email=email;target.active=active
     if password:target.password_hash=hash_password(password)
     db.commit();return RedirectResponse("/?tab=users",303)
 
