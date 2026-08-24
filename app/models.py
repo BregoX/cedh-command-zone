@@ -16,6 +16,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20), default="player")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
     player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id", ondelete="SET NULL"), nullable=True, unique=True)
     player: Mapped[Player | None] = relationship()
 

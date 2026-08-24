@@ -1,7 +1,7 @@
 from datetime import date
 from pathlib import Path
 import os
-from fastapi import Depends, FastAPI, Form, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -23,8 +23,11 @@ templates=Jinja2Templates(directory=BASE/"templates")
 def startup():
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
-        columns={row[1] for row in conn.exec_driver_sql("PRAGMA table_info(seats)")} if engine.dialect.name=="sqlite" else {row[0] for row in conn.exec_driver_sql("SELECT column_name FROM information_schema.columns WHERE table_name='seats'")}
-        if "deck" not in columns: conn.exec_driver_sql("ALTER TABLE seats ADD COLUMN deck VARCHAR(160) NOT NULL DEFAULT ''")
+        def columns(table):
+            if engine.dialect.name=="sqlite": return {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            return {row[0] for row in conn.exec_driver_sql("SELECT column_name FROM information_schema.columns WHERE table_name=%s",(table,))}
+        if "deck" not in columns("seats"): conn.exec_driver_sql("ALTER TABLE seats ADD COLUMN deck VARCHAR(160) NOT NULL DEFAULT ''")
+        if "active" not in columns("users"): conn.exec_driver_sql("ALTER TABLE users ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE")
 
 @app.get("/health")
 def health(): return {"status":"ok"}
@@ -36,7 +39,8 @@ def home(request:Request,event_id:str|None=None,db:Session=Depends(session)):
     players=db.scalars(select(Player).order_by(Player.name)).all()
     events=db.scalars(select(Event).order_by(Event.id.desc())).all()
     user=current_user(request,db)
-    return templates.TemplateResponse(request,"index.html",{"event":event,"players":players,"events":events,"standing":standings(event) if event else [],"user":user,"needs_setup":db.scalar(select(User.id).limit(1)) is None})
+    users=db.scalars(select(User).order_by(User.username)).all() if user and user.role=="admin" else []
+    return templates.TemplateResponse(request,"index.html",{"event":event,"players":players,"events":events,"users":users,"standing":standings(event) if event else [],"user":user,"needs_setup":db.scalar(select(User.id).limit(1)) is None,"error":request.query_params.get("error")})
 
 @app.get("/login")
 def login_page(request:Request,db:Session=Depends(session)):
@@ -52,7 +56,7 @@ def setup(request:Request,username:str=Form(),password:str=Form(),db:Session=Dep
 @app.post("/login")
 def login(request:Request,username:str=Form(),password:str=Form(),db:Session=Depends(session)):
     user=db.scalar(select(User).where(User.username==username.strip()))
-    if not user or not verify_password(password,user.password_hash):return templates.TemplateResponse(request,"login.html",{"setup":False,"error":"Неверный логин или пароль"},status_code=400)
+    if not user or not user.active or not verify_password(password,user.password_hash):return templates.TemplateResponse(request,"login.html",{"setup":False,"error":"Неверный логин, пароль или аккаунт отключён"},status_code=400)
     request.session["user_id"]=user.id;return RedirectResponse("/",303)
 
 @app.post("/logout")
@@ -73,6 +77,35 @@ def create_player_account(request:Request,player_id:int,username:str=Form(),pass
     require_admin(request,db)
     if len(password)<8:raise HTTPException(400,"Пароль должен содержать минимум 8 символов")
     db.add(User(username=username.strip(),password_hash=hash_password(password),role="player",player_id=player_id));db.commit();return RedirectResponse("/?tab=players",303)
+
+@app.post("/users")
+def create_user(request:Request,username:str=Form(),password:str=Form(),role:str=Form("player"),player_id:str=Form(""),db:Session=Depends(session)):
+    require_admin(request,db);username=username.strip()
+    if not username:return RedirectResponse("/?tab=users&error=Укажите логин",303)
+    if db.scalar(select(User.id).where(User.username==username)):return RedirectResponse("/?tab=users&error=Такой логин уже существует",303)
+    if len(password)<8:return RedirectResponse("/?tab=users&error=Пароль должен содержать минимум 8 символов",303)
+    if role not in {"admin","player"}:raise HTTPException(400,"Неизвестная роль")
+    linked_player_id=int(player_id) if player_id.isdigit() else None
+    if linked_player_id and db.scalar(select(User.id).where(User.player_id==linked_player_id)):return RedirectResponse("/?tab=users&error=У этого игрока уже есть аккаунт",303)
+    db.add(User(username=username,password_hash=hash_password(password),role=role,player_id=linked_player_id,active=True));db.commit()
+    return RedirectResponse("/?tab=users",303)
+
+@app.post("/users/{user_id}")
+def edit_user(request:Request,user_id:int,role:str=Form(),player_id:str=Form(""),password:str=Form(""),active:bool=Form(False),db:Session=Depends(session)):
+    admin=require_admin(request,db);target=db.get(User,user_id)
+    if not target:raise HTTPException(404)
+    if role not in {"admin","player"}:raise HTTPException(400,"Неизвестная роль")
+    removing_admin=target.role=="admin" and target.active and (role!="admin" or not active)
+    admin_count=len(db.scalars(select(User.id).where(User.role=="admin",User.active==True)).all())
+    if removing_admin and admin_count<=1:return RedirectResponse("/?tab=users&error=Нельзя отключить или понизить последнего администратора",303)
+    if target.id==admin.id and not active:return RedirectResponse("/?tab=users&error=Нельзя отключить собственный аккаунт",303)
+    linked_player_id=int(player_id) if player_id.isdigit() else None
+    owner=db.scalar(select(User).where(User.player_id==linked_player_id,User.id!=target.id)) if linked_player_id else None
+    if owner:return RedirectResponse("/?tab=users&error=У этого игрока уже есть аккаунт",303)
+    if password and len(password)<8:return RedirectResponse("/?tab=users&error=Новый пароль должен содержать минимум 8 символов",303)
+    target.role=role;target.player_id=linked_player_id;target.active=active
+    if password:target.password_hash=hash_password(password)
+    db.commit();return RedirectResponse("/?tab=users",303)
 
 @app.post("/events")
 def add_event(request:Request,name:str=Form(),event_date:date=Form(),player_ids:list[int]=Form(default=[]),db:Session=Depends(session)):

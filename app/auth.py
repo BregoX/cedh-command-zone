@@ -17,7 +17,11 @@ def verify_password(password: str, encoded: str) -> bool:
 
 def current_user(request:Request,db:Session)->User|None:
     user_id=request.session.get("user_id")
-    return db.get(User,user_id) if user_id else None
+    user=db.get(User,user_id) if user_id else None
+    if user and not user.active:
+        request.session.clear()
+        return None
+    return user
 
 def require_admin(request:Request,db:Session)->User:
     user=current_user(request,db)
