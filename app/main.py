@@ -115,8 +115,9 @@ def add_event(request:Request,name:str=Form(),event_date:date=Form(),player_ids:
 @app.post("/events/{event_id}/toggle/{player_id}")
 def toggle(request:Request,event_id:int,player_id:int,db:Session=Depends(session)):
     require_admin(request,db)
+    if not db.get(Event,event_id) or not db.get(Player,player_id):raise HTTPException(404)
     reg=db.scalar(select(Registration).where(Registration.event_id==event_id,Registration.player_id==player_id))
-    db.delete(reg) if reg else db.add(Registration(event_id=event_id,player_id=player_id));db.commit();return RedirectResponse(f"/?event_id={event_id}&tab=players",303)
+    db.delete(reg) if reg else db.add(Registration(event_id=event_id,player_id=player_id));db.commit();return RedirectResponse(f"/?event_id={event_id}&tab=roster",303)
 
 @app.post("/events/{event_id}/rounds")
 def round_create(request:Request,event_id:int,db:Session=Depends(session)):
@@ -126,7 +127,12 @@ def round_create(request:Request,event_id:int,db:Session=Depends(session)):
 @app.post("/events/{event_id}/pods/{pod_id}/winner")
 def winner(request:Request,event_id:int,pod_id:int,player_id:int=Form(),db:Session=Depends(session)):
     require_admin(request,db)
-    pod=db.get(Pod,pod_id);pod.winner_id=player_id;db.commit();return RedirectResponse(f"/?event_id={event_id}",303)
+    event=load_event(db,event_id);pod=db.get(Pod,pod_id)
+    if not event or not pod:raise HTTPException(404)
+    latest_round=event.rounds[-1] if event.rounds else None
+    if not latest_round or pod.round_id!=latest_round.id:raise HTTPException(409,"Победителя можно выбирать только в текущем раунде")
+    if player_id not in {seat.player_id for seat in pod.seats}:raise HTTPException(400,"Игрок не сидит за этим столом")
+    pod.winner_id=player_id;db.commit();return RedirectResponse(f"/?event_id={event_id}",303)
 
 @app.post("/events/{event_id}/seats/{seat_id}/deck")
 def set_deck(request:Request,event_id:int,seat_id:int,deck:str=Form(""),db:Session=Depends(session)):
