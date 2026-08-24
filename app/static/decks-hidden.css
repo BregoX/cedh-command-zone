@@ -1,0 +1,1 @@
+input[name="commander"],form.deck,.player small,.stand b small,.roster-player>small,#pickerList label small,.row>b+span{display:none!important}.create.inline,.edit{grid-template-columns:1fr auto}.player span{justify-content:center}.stand>div{align-items:center}
