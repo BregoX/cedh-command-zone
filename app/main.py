@@ -47,7 +47,7 @@ def home(request:Request,event_id:str|None=None,db:Session=Depends(session)):
     events=db.scalars(select(Event).order_by(Event.id.desc())).all()
     user=current_user(request,db)
     users=db.scalars(select(User).order_by(User.username)).all() if user and user.role=="admin" else []
-    return templates.TemplateResponse(request,"index.html",{"event":event,"players":players,"events":events,"users":users,"standing":standings(event) if event else [],"user":user,"needs_setup":db.scalar(select(User.id).limit(1)) is None,"error":request.query_params.get("error")})
+    return templates.TemplateResponse(request,"index.html",{"event":event,"players":players,"events":events,"users":users,"standing":standings(event) if event else [],"user":user,"needs_setup":db.scalar(select(User.id).limit(1)) is None,"error":request.query_params.get("error"),"primary_admin_email":os.getenv("PRIMARY_ADMIN_EMAIL","").strip().lower()})
 
 @app.get("/login")
 def login_page(request:Request,db:Session=Depends(session)):
@@ -135,6 +135,9 @@ def edit_user(request:Request,user_id:int,role:str=Form(),player_id:str=Form("")
     admin=require_admin(request,db);target=db.get(User,user_id)
     if not target:raise HTTPException(404)
     if role not in {"admin","player"}:raise HTTPException(400,"Неизвестная роль")
+    email=email.strip().lower() or None
+    primary_email=os.getenv("PRIMARY_ADMIN_EMAIL","").strip().lower()
+    if primary_email and target.email==primary_email and (email!=primary_email or role!="admin" or not active):return RedirectResponse("/?tab=users&error=Главного администратора нельзя отключить, понизить или изменить его email",303)
     removing_admin=target.role=="admin" and target.active and (role!="admin" or not active)
     admin_count=len(db.scalars(select(User.id).where(User.role=="admin",User.active==True)).all())
     if removing_admin and admin_count<=1:return RedirectResponse("/?tab=users&error=Нельзя отключить или понизить последнего администратора",303)
@@ -142,7 +145,6 @@ def edit_user(request:Request,user_id:int,role:str=Form(),player_id:str=Form("")
     linked_player_id=int(player_id) if player_id.isdigit() else None
     owner=db.scalar(select(User).where(User.player_id==linked_player_id,User.id!=target.id)) if linked_player_id else None
     if owner:return RedirectResponse("/?tab=users&error=У этого игрока уже есть аккаунт",303)
-    email=email.strip().lower() or None
     email_owner=db.scalar(select(User).where(User.email==email,User.id!=target.id)) if email else None
     if email_owner:return RedirectResponse("/?tab=users&error=Этот email уже используется",303)
     if password and len(password)<8:return RedirectResponse("/?tab=users&error=Новый пароль должен содержать минимум 8 символов",303)

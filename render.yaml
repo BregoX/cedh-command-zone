@@ -14,3 +14,5 @@ services:
         sync: false
       - key: GOOGLE_REDIRECT_URI
         value: https://cedh-command-zone.onrender.com/auth/google/callback
+      - key: PRIMARY_ADMIN_EMAIL
+        sync: false
