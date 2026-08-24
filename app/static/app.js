@@ -7,7 +7,7 @@ document.addEventListener("DOMContentLoaded", () => {
     requestAnimationFrame(() => window.scrollTo({ top: Number(saved), behavior: "instant" }));
   }
 
-  document.querySelectorAll('form[action*="/winner"], form.deck').forEach((form) => {
+  document.querySelectorAll('form[action*="/winner"], form[action*="/draw"], form.deck').forEach((form) => {
     form.addEventListener("submit", () => {
       sessionStorage.setItem(scrollKey, String(window.scrollY));
     });

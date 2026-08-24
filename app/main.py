@@ -28,6 +28,7 @@ def startup():
             return {row[0] for row in conn.exec_driver_sql("SELECT column_name FROM information_schema.columns WHERE table_name=%s",(table,))}
         if "deck" not in columns("seats"): conn.exec_driver_sql("ALTER TABLE seats ADD COLUMN deck VARCHAR(160) NOT NULL DEFAULT ''")
         if "active" not in columns("users"): conn.exec_driver_sql("ALTER TABLE users ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE")
+        if "draw" not in columns("pods"): conn.exec_driver_sql("ALTER TABLE pods ADD COLUMN draw BOOLEAN NOT NULL DEFAULT FALSE")
 
 @app.get("/health")
 def health(): return {"status":"ok"}
@@ -132,7 +133,16 @@ def winner(request:Request,event_id:int,pod_id:int,player_id:int=Form(),db:Sessi
     latest_round=event.rounds[-1] if event.rounds else None
     if not latest_round or pod.round_id!=latest_round.id:raise HTTPException(409,"Победителя можно выбирать только в текущем раунде")
     if player_id not in {seat.player_id for seat in pod.seats}:raise HTTPException(400,"Игрок не сидит за этим столом")
-    pod.winner_id=player_id;db.commit();return RedirectResponse(f"/?event_id={event_id}",303)
+    pod.winner_id=player_id;pod.draw=False;db.commit();return RedirectResponse(f"/?event_id={event_id}",303)
+
+@app.post("/events/{event_id}/pods/{pod_id}/draw")
+def draw(request:Request,event_id:int,pod_id:int,db:Session=Depends(session)):
+    require_admin(request,db)
+    event=load_event(db,event_id);pod=db.get(Pod,pod_id)
+    if not event or not pod:raise HTTPException(404)
+    latest_round=event.rounds[-1] if event.rounds else None
+    if not latest_round or pod.round_id!=latest_round.id:raise HTTPException(409,"Ничью можно выбирать только в текущем раунде")
+    pod.winner_id=None;pod.draw=True;db.commit();return RedirectResponse(f"/?event_id={event_id}",303)
 
 @app.post("/events/{event_id}/seats/{seat_id}/deck")
 def set_deck(request:Request,event_id:int,seat_id:int,deck:str=Form(""),db:Session=Depends(session)):

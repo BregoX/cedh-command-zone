@@ -50,6 +50,7 @@ class Pod(Base):
     round_id: Mapped[int] = mapped_column(ForeignKey("rounds.id", ondelete="CASCADE"))
     table_number: Mapped[int]
     winner_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
+    draw: Mapped[bool] = mapped_column(Boolean, default=False)
     seats: Mapped[list["Seat"]] = relationship(cascade="all, delete-orphan", order_by="Seat.position")
 
 class Seat(Base):
